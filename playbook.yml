@@ -1,0 +1,163 @@
+---
+- hosts: datanode
+  remote_user: user  
+  become_method: sudo
+  become: yes
+  vars:
+    data_vol: node4:/home/user/data
+  tasks:
+      - name: update hosts file
+        template: src=./template/hosts.j2 dest=/etc/hosts
+      - name: install software-properties-common
+        apt: name=software-properties-common state=present
+      - name: update repo
+        apt_repository: repo='ppa:gluster/glusterfs-3.5'
+      - name: install glusterfs server
+        apt: name=glusterfs-server state=present update_cache=yes
+      - name: create volume
+        shell: gluster volume create data_volume {{data_vol}} force
+      - name: start data volume
+        shell: gluster volume start data_volume
+
+- hosts: master
+  remote_user: user
+  become_method: sudo
+  become: yes
+  vars:
+    master_ip: 192.168.199.10
+  tasks:
+      - name: update hosts file
+        template: src=./template/hosts.j2 dest=/etc/hosts
+      - name: add ubuntu apt-key
+        apt_key: keyserver=hkp://keyserver.ubuntu.com:80 id=E56151BF
+      - name: add Mesosphere repo
+        apt_repository: repo='deb http://repos.mesosphere.com/ubuntu trusty main'        
+      - name: apt-get update
+        apt: update_cache=yes      
+      - name: add JDK repo
+        apt_repository: repo='ppa:openjdk-r/ppa'
+      - name: apt-get update
+        apt: update_cache=yes     
+      - name: install openjdk-8-jdk
+        apt: name=openjdk-8-jdk state=present
+      - name: install mesosphere
+        apt: name=mesosphere state=latest          
+      - name: configure zookeeper ID        
+        shell: echo 1 > /etc/zookeeper/conf/myid
+      - name: configure zookeeper server addresses
+        template: src=./template/zoo.cfg.j2 dest=/etc/zookeeper/conf/zoo.cfg
+      - name: restart zookeeper
+        shell: service zookeeper restart
+      - name: Overwrite Zookeeper file
+        template: src=./template/zk.j2 dest=/etc/mesos/zk
+      - name: update quorum
+        template: src=./template/quorum.j2 dest=/etc/mesos-master/quorum
+      - name: update master node ip in mesos
+        shell: echo {{master_ip}} | sudo tee /etc/mesos-master/ip
+      - name: copy ip value to hostname file
+        shell: cp /etc/mesos-master/ip /etc/mesos-master/hostname
+      - name: create directory
+        shell: mkdir -p /etc/marathon/conf
+      - name: copy file to config marathon
+        shell: cp /etc/mesos-master/hostname /etc/marathon/conf
+      - name: copy file to config marathon from mesos
+        shell: cp /etc/mesos/zk /etc/marathon/conf/master
+      - name: Overwrite zk file
+        template: src=./template/marathon_zk.j2 dest=/etc/marathon/conf/zk
+      - name: disable mesos-slave
+        shell: sh -c "echo manual > /etc/init/mesos-slave.override"    
+      - name: Restart zookeeper
+        shell: restart zookeeper
+      - name: Enable mesos-master
+        service: name=mesos-master state=started enabled=yes
+      - name: Enable marathon on port 8080
+        service: name=marathon state=started enabled=yes
+
+- hosts: slave
+  remote_user: user
+  become_method: sudo
+  become: yes
+  vars:
+    home_dir: "/home/user/"
+    remote_gluster_vol: "node4:/data_volume"
+    local_vol_dir: "/home/user/data "
+    datanode_name: "node4"
+    GOPATH: "/home/user/go" 
+  environment:  	
+    GOPATH: "/home/user/go"    
+  tasks:
+      - name: update hosts file
+        template: src=./template/hosts.j2 dest=/etc/hosts
+      - name: add ubuntu apt-key
+        apt_key: keyserver=hkp://keyserver.ubuntu.com:80 id=E56151BF
+      - name: add Mesosphere repo
+        apt_repository: repo='deb http://repos.mesosphere.com/ubuntu trusty main'
+      - name: apt-get update
+        apt: update_cache=yes
+      - name: add JDK repo
+        apt_repository: repo='ppa:openjdk-r/ppa'
+      - name: apt-get update
+        apt: update_cache=yes
+      - name: install openjdk-8-jdk
+        apt: name=openjdk-8-jdk state=present
+      - name: install mesos
+        apt: name=mesos state=latest
+      - name: stop zookeeper
+        shell: service zookeeper stop
+      - name: disable Zookeeper
+        shell: sh -c "echo manual > /etc/init/zookeeper.override"
+      - name: overwrite mesos zk file
+        template: src=./template/zk.j2 dest=/etc/mesos/zk
+      - name: disable mesos-master
+        shell: sh -c "echo manual > /etc/init/mesos-master.override"      
+      - name: update slave configuration to specify the use of the Docker containerizer
+        shell: sh -c "echo docker,mesos > /etc/mesos-slave/containerizers"
+      - name: Increase the executor timeout to account for the potential delay in pulling a docker image to the slave.
+        shell: sh -c "echo 5mins > /etc/mesos-slave/executor_registration_timeout"
+      - name: install curl
+        apt: name=curl state=present
+      - name: install docker
+        shell: curl -sSL https://get.docker.com/ | sh
+      - name: update mesos-slave ip
+        copy:
+          content: "{{ hostvars[inventory_hostname]['ansible_eth0'].ipv4.address }}"
+          dest: /etc/mesos-slave/ip
+      - name: copy to hostname
+        shell: cp /etc/mesos-slave/ip /etc/mesos-slave/hostname
+      - name: start mesos-slave service
+        shell: service mesos-slave restart
+      - name: apt-get update
+        apt: update_cache=yes 
+      - name: install gluster-client
+        apt: name=glusterfs-client state=present
+      - name: create data directory
+        file: path={{home_dir}}/data state=directory
+      - name: mount remote data data_volume
+        shell: mount -t glusterfs {{remote_gluster_vol}} {{local_vol_dir}}            
+      - name: add golang repo
+        apt_repository: repo='ppa:ubuntu-lxc/lxd-stable'
+      - name: update repo
+        apt: update_cache=yes
+      - name: install golang
+        apt: name=golang state=present update_cache=yes
+      - name: install git
+        apt: name=git state=present
+      - name: mkdir directory
+        file: path={{GOPATH}} state=directory
+      - name: set GOPATH
+        lineinfile: dest={{home_dir}}.bashrc state=present line="export GOPATH=$HOME/go"
+      - name: source .bashrc
+        shell: . {{home_dir}}.bashrc
+      - name: add /usr/local/go/bin to path
+        lineinfile: dest=/etc/environment state=present backrefs=yes regexp='PATH=(["]*)((?!.*?/usr/local/go/bin).*?)(["]*)$' line="PATH=\1\2:/usr/local/go/bin\3"      
+      - name: source .bashrc
+        shell: echo $GOPATH > {{home_dir}}log      
+      - name: get docker-volume-glusterfs plugin!
+        shell: go get github.com/calavera/docker-volume-glusterfs
+      - name: run the plugin
+        shell: . {{home_dir}}go/bin/docker-volume-glusterfs -servers {{datanode_name}} &
+      - name: create directory
+        shell: mkdir -p /usr/local/mesos-dns/
+      - name: download mesos-dns
+        get_url: url=https://github.com/mesosphere/mesos-dns/releases/download/v0.5.2/mesos-dns-v0.5.2-linux-amd64 dest=/usr/local/mesos-dns/mesos-dns mode=0755
+
