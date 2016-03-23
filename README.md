@@ -11,7 +11,7 @@ This script will set up a cluster with 4 machines:
 
 Mesos master node will connect to 2 slaves.
 
-Each salve can access the data node volume (data_volume) by using glusterfs.
+Each slave can access the data node volume (data_volume) by using glusterfs.
 
 ## How to run this script
 
@@ -20,5 +20,10 @@ Each salve can access the data node volume (data_volume) by using glusterfs.
 
 2) Command: ansible-playbook playbook.yml
 
-## Note:
+## TODO
 1) The script did not install mesos-dns 
+2) The script did not ensure mounting the remote volume after reboot
+In slave machine:
+sudo crontab -u root -e
+[add the following at the end]
+@reboot sleep 10;mount -t glusterfs node4:/data_volume /home/user/data
