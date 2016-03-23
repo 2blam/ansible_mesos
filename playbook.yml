@@ -128,6 +128,8 @@
         shell: service mesos-slave restart
       - name: apt-get update
         apt: update_cache=yes 
+      - name: update repo
+        apt_repository: repo='ppa:gluster/glusterfs-3.5'
       - name: install gluster-client
         apt: name=glusterfs-client state=present
       - name: create data directory
